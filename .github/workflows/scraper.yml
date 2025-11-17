@@ -2,8 +2,8 @@ name: Scrape Prague Nextbike
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # run every 5 minutes
-  workflow_dispatch:         # allow manual run
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -13,43 +13,82 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Run scraper
-        run: |
-          python scrape_prague.py
+      - name: Install boto3
+        run: pip install boto3
 
-      # --------------------
-      # Upload all parquet files to Backblaze
-      # --------------------
-      - name: Upload to Backblaze B2
-        run: |
-          pip install boto3
+      - name: Create data folder
+        run: mkdir -p data
 
-          python - <<EOF
-          import boto3
-          import os
-          from pathlib import Path
+      # -------------------------
+      # DOWNLOAD HISTORY FROM B2
+      # -------------------------
+      - name: Download bikes_history from B2
+        if: always()
+        run: |
+          python3 - << 'EOF'
+          import boto3, os
 
           s3 = boto3.client(
               "s3",
-              endpoint_url=f"https://${{ secrets.B2_ENDPOINT }}",
+              endpoint_url="https://${{ secrets.B2_ENDPOINT }}",
               aws_access_key_id="${{ secrets.B2_KEY_ID }}",
-              aws_secret_access_key="${{ secrets.B2_APPLICATION_KEY }}",
+              aws_secret_access_key="${{ secrets.B2_APPLICATION_KEY }}"
           )
 
-          bucket = "${{ secrets.B2_BUCKET_NAME }}"
-          data_dir = Path("data")
+          try:
+              s3.download_file(
+                  "${{ secrets.B2_BUCKET_NAME }}",
+                  "bikes_history.parquet",
+                  "data/bikes_history.parquet"
+              )
+              print("Downloaded bikes_history.parquet")
+          except Exception as e:
+              print("No bikes_history.parquet found:", e)
 
-          # upload every file in data/
-          for file in data_dir.glob("*"):
-              s3.upload_file(str(file), bucket, file.name)
-              print("Uploaded:", file.name)
+          try:
+              s3.download_file(
+                  "${{ secrets.B2_BUCKET_NAME }}",
+                  "stations_history.parquet",
+                  "data/stations_history.parquet"
+              )
+              print("Downloaded stations_history.parquet")
+          except Exception as e:
+              print("No stations_history.parquet found:", e)
+          EOF
+
+      # -------------------------
+      # RUN SCRAPER
+      # -------------------------
+      - name: Run scraper
+        run: python scrape_prague.py
+
+      # -------------------------
+      # UPLOAD NEW FILES BACK TO B2
+      # -------------------------
+      - name: Upload updated parquet files to Backblaze B2
+        run: |
+          python3 - << 'EOF'
+          import boto3, os
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url="https://${{ secrets.B2_ENDPOINT }}",
+              aws_access_key_id="${{ secrets.B2_KEY_ID }}",
+              aws_secret_access_key="${{ secrets.B2_APPLICATION_KEY }}"
+          )
+
+          for filename in ["bikes_latest.parquet", "bikes_history.parquet", 
+                           "stations_latest.parquet", "stations_history.parquet"]:
+              path = f"data/{filename}"
+              if os.path.exists(path):
+                  s3.upload_file(path, "${{ secrets.B2_BUCKET_NAME }}", filename)
+                  print("Uploaded:", filename)
           EOF
