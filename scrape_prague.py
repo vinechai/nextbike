@@ -11,6 +11,7 @@ LIVE_DATA_URL = "https://maps.nextbike.net/maps/nextbike-live.flatjson"
 
 
 def append_parquet(df, path):
+    """Append new rows to a parquet file (or create it if missing)."""
     if path.exists():
         old = pd.read_parquet(path)
         df = pd.concat([old, df], ignore_index=True)
@@ -18,15 +19,18 @@ def append_parquet(df, path):
 
 
 def scrape_prague_once():
+    # ------------------------------------------------------
+    # LOAD API
+    # ------------------------------------------------------
     resp = requests.get(LIVE_DATA_URL)
     resp.raise_for_status()
     data = resp.json()
 
     scrape_time = datetime.now(timezone.utc)
 
-    # -------------------------------------------
-    # 1. STATIONS (FROM places)
-    # -------------------------------------------
+    # ------------------------------------------------------
+    # 1. STATIONS
+    # ------------------------------------------------------
     stations = [
         place for place in data["places"]
         if place.get("city_id") == PRAGUE_CITY_ID
@@ -35,19 +39,22 @@ def scrape_prague_once():
     stations_df = pd.json_normalize(stations)
     stations_df["scrape_time"] = scrape_time
 
+    # save latest snapshot
     stations_df.to_parquet(DATA_DIR / "stations_latest.parquet", index=False)
 
-    # -------------------------------------------
-    # 2. BIKES (EXTRACTED FROM stations)
-    # -------------------------------------------
+    # save history
+    append_parquet(stations_df, DATA_DIR / "stations_history.parquet")
+
+    # ------------------------------------------------------
+    # 2. BIKES AT EACH STATION
+    # ------------------------------------------------------
     bike_rows = []
 
     for st in stations:
         bike_numbers = st.get("bike_numbers")
         if not bike_numbers:
             continue
-        
-        # convert "485396,481489" → ["485396", "481489"]
+
         bikes = [b.strip() for b in bike_numbers.split(",")]
 
         for bike_id in bikes:
@@ -62,7 +69,10 @@ def scrape_prague_once():
 
     bikes_df = pd.DataFrame(bike_rows)
 
+    # save latest snapshot
     bikes_df.to_parquet(DATA_DIR / "bikes_latest.parquet", index=False)
+
+    # save history
     append_parquet(bikes_df, DATA_DIR / "bikes_history.parquet")
 
     print(f"[OK] Scraped Prague at {scrape_time}")
