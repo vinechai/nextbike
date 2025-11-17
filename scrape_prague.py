@@ -39,9 +39,6 @@ def scrape_prague_once():
     stations_df = pd.json_normalize(stations)
     stations_df["scrape_time"] = scrape_time
 
-    # save latest snapshot
-    stations_df.to_parquet(DATA_DIR / "stations_latest.parquet", index=False)
-
     # save history
     append_parquet(stations_df, DATA_DIR / "stations_history.parquet")
 
@@ -68,9 +65,6 @@ def scrape_prague_once():
             })
 
     bikes_df = pd.DataFrame(bike_rows)
-
-    # save latest snapshot
-    bikes_df.to_parquet(DATA_DIR / "bikes_latest.parquet", index=False)
 
     # save history
     append_parquet(bikes_df, DATA_DIR / "bikes_history.parquet")
