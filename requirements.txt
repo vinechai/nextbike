@@ -1,4 +1,10 @@
 pandas
 requests
 pyarrow
-boto3
+psycopg2-binary
+sqlalchemy
+python-dotenv
+folium
+seaborn
+matplotlib
+numpy

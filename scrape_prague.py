@@ -1,78 +1,180 @@
+#!/usr/bin/env python3
+"""
+scrape nextbike prague and write directly to postgresql.
+
+runs on github actions every 10 minutes. connects to DATABASE_URL
+(set to local postgres for dev, supabase url for production).
+"""
+
+import os
+import sys
 import requests
-import pandas as pd
+import psycopg2
+import psycopg2.extras
 from datetime import datetime, timezone
-from pathlib import Path
+
 
 PRAGUE_CITY_ID = 661
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
-
 LIVE_DATA_URL = "https://maps.nextbike.net/maps/nextbike-live.flatjson"
 
 
-def append_parquet(df, path):
-    """Append new rows to a parquet file (or create it if missing)."""
-    if path.exists():
-        old = pd.read_parquet(path)
-        df = pd.concat([old, df], ignore_index=True)
-    df.to_parquet(path, index=False)
+def get_conn():
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        print("DATABASE_URL not set")
+        sys.exit(1)
+    try:
+        return psycopg2.connect(url)
+    except psycopg2.OperationalError as e:
+        print(f"could not connect: {e}")
+        print("check DATABASE_URL and make sure the database is reachable")
+        sys.exit(1)
 
 
-def scrape_prague_once():
-    # ------------------------------------------------------
-    # LOAD API
-    # ------------------------------------------------------
-    resp = requests.get(LIVE_DATA_URL)
+def fetch_prague():
+    resp = requests.get(LIVE_DATA_URL, timeout=30)
     resp.raise_for_status()
     data = resp.json()
+    stations = [p for p in data["places"] if p.get("city_id") == PRAGUE_CITY_ID]
+    if not stations:
+        raise ValueError(f"no prague stations found (city_id={PRAGUE_CITY_ID})")
+    return stations
 
-    scrape_time = datetime.now(timezone.utc)
 
-    # ------------------------------------------------------
-    # 1. STATIONS
-    # ------------------------------------------------------
-    stations = [
-        place for place in data["places"]
-        if place.get("city_id") == PRAGUE_CITY_ID
+def upsert_stations(cur, stations, scrape_time):
+    rows = [
+        (
+            st["uid"],
+            st.get("name", ""),
+            float(st.get("lat", 0)),
+            float(st.get("lng", 0)),
+            int(st.get("bike_racks", 0) or 0),
+            bool(st.get("spot", True)),
+            bool(st.get("bike", False)),
+            scrape_time,
+        )
+        for st in stations
     ]
+    psycopg2.extras.execute_values(
+        cur,
+        """
+        INSERT INTO stations (uid, name, lat, lng, bike_racks, is_spot, is_bike, first_seen_at)
+        VALUES %s
+        ON CONFLICT (uid) DO NOTHING
+        """,
+        rows,
+        page_size=500,
+    )
 
-    stations_df = pd.json_normalize(stations)
-    stations_df["scrape_time"] = scrape_time
 
-    # save history
-    append_parquet(stations_df, DATA_DIR / "stations_history.parquet")
+def insert_snapshots(cur, stations, scrape_time):
+    rows = [
+        (
+            st["uid"],
+            int(st.get("bikes", 0) or 0),
+            int(st.get("bikes_available_to_rent", 0) or 0),
+            int(st.get("free_racks", 0) or 0),
+            int(st.get("booked_bikes", 0) or 0),
+            scrape_time,
+        )
+        for st in stations
+    ]
+    psycopg2.extras.execute_values(
+        cur,
+        """
+        INSERT INTO station_snapshots
+            (station_uid, bikes_available, bikes_available_to_rent, free_racks, booked_bikes, scrape_time)
+        VALUES %s
+        """,
+        rows,
+        page_size=500,
+    )
 
-    # ------------------------------------------------------
-    # 2. BIKES AT EACH STATION
-    # ------------------------------------------------------
-    bike_rows = []
 
+def update_bike_positions(cur, stations, scrape_time):
+    """
+    incrementally maintain one row per stay in bike_positions.
+    stays are never deleted — old stays keep their last_seen_at from when the bike left.
+    """
+    # build current state: bike_id -> (station_uid, lat, lng)
+    current = {}
     for st in stations:
-        bike_numbers = st.get("bike_numbers")
-        if not bike_numbers:
+        if not st.get("bike_numbers"):
             continue
+        uid = st["uid"]
+        lat, lng = float(st["lat"]), float(st["lng"])
+        for bike_id in (b.strip() for b in st["bike_numbers"].split(",") if b.strip()):
+            current[bike_id] = (uid, lat, lng)
 
-        bikes = [b.strip() for b in bike_numbers.split(",")]
+    # DISTINCT ON with ORDER BY (bike_id, first_seen_at DESC) uses the existing index —
+    # postgres reads one entry per bike, not the whole table
+    cur.execute("""
+        SELECT DISTINCT ON (bike_id)
+            bike_id, id AS stay_id, station_uid
+        FROM bike_positions
+        ORDER BY bike_id, first_seen_at DESC
+    """)
+    prev = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+    # prev: bike_id -> (stay_id, station_uid)
 
-        for bike_id in bikes:
-            bike_rows.append({
-                "bike_id": bike_id,
-                "station_uid": st["uid"],
-                "station_name": st["name"],
-                "lat": st["lat"],
-                "lng": st["lng"],
-                "scrape_time": scrape_time
-            })
+    continuing_ids = []  # stay ids that continue (same station) — just update last_seen_at
+    new_stays = []       # (bike_id, station_uid, lat, lng, first_seen_at, last_seen_at)
 
-    bikes_df = pd.DataFrame(bike_rows)
+    for bike_id, (station_uid, lat, lng) in current.items():
+        if bike_id in prev:
+            stay_id, prev_station = prev[bike_id]
+            if station_uid == prev_station:
+                continuing_ids.append(stay_id)
+            else:
+                # moved — old stay keeps its last_seen_at, we open a new one
+                new_stays.append((bike_id, station_uid, lat, lng, scrape_time, scrape_time))
+        else:
+            # new bike or reappeared after >48h
+            new_stays.append((bike_id, station_uid, lat, lng, scrape_time, scrape_time))
 
-    # save history
-    append_parquet(bikes_df, DATA_DIR / "bikes_history.parquet")
+    if continuing_ids:
+        cur.execute(
+            "UPDATE bike_positions SET last_seen_at = %s WHERE id = ANY(%s)",
+            (scrape_time, continuing_ids),
+        )
 
-    print(f"[OK] Scraped Prague at {scrape_time}")
-    print(f"     Stations: {len(stations)}")
-    print(f"     Bikes: {len(bikes_df)}")
+    if new_stays:
+        psycopg2.extras.execute_values(
+            cur,
+            """
+            INSERT INTO bike_positions (bike_id, station_uid, lat, lng, first_seen_at, last_seen_at)
+            VALUES %s
+            """,
+            new_stays,
+            page_size=500,
+        )
+
+    print(f"  bikes in this scrape: {len(current)}")
+    print(f"  continuing stays:     {len(continuing_ids)}")
+    print(f"  new stays opened:     {len(new_stays)}")
+
+
+def main():
+    print("fetching from nextbike api...")
+    stations = fetch_prague()
+    scrape_time = datetime.now(timezone.utc)
+    print(f"  {len(stations)} stations at {scrape_time:%Y-%m-%d %H:%M:%S} UTC")
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            upsert_stations(cur, stations, scrape_time)
+            insert_snapshots(cur, stations, scrape_time)
+            update_bike_positions(cur, stations, scrape_time)
+        conn.commit()
+        print("done.")
+    except Exception as e:
+        conn.rollback()
+        print(f"error, transaction rolled back: {e}")
+        raise
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
-    scrape_prague_once()
+    main()
