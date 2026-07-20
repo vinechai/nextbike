@@ -14,8 +14,12 @@ import psycopg2.extras
 from datetime import datetime, timezone
 
 
-PRAGUE_CITY_ID = 661
-LIVE_DATA_URL = "https://maps.nextbike.net/maps/nextbike-live.flatjson"
+PRAGUE_CITY_ID  = 661
+LIVE_DATA_URL   = "https://maps.nextbike.net/maps/nextbike-live.flatjson"
+WEATHER_URL     = "https://api.open-meteo.com/v1/forecast"
+PRAGUE_LAT      = 50.0755
+PRAGUE_LNG      = 14.4378
+WEATHER_VARS    = "temperature_2m,precipitation,windspeed_10m,weathercode,snowfall"
 
 
 def get_conn():
@@ -29,6 +33,57 @@ def get_conn():
         print(f"could not connect: {e}")
         print("check DATABASE_URL and make sure the database is reachable")
         sys.exit(1)
+
+
+def fetch_weather(scrape_time):
+    """fetch weather for the current utc hour from open-meteo forecast api."""
+    current_hour = scrape_time.replace(minute=0, second=0, microsecond=0)
+    target_str   = current_hour.strftime("%Y-%m-%dT%H:00")
+
+    resp = requests.get(WEATHER_URL, params={
+        "latitude":     PRAGUE_LAT,
+        "longitude":    PRAGUE_LNG,
+        "hourly":       WEATHER_VARS,
+        "timezone":     "UTC",
+        "past_days":    1,
+        "forecast_days": 1,
+    }, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()["hourly"]
+
+    if target_str not in data["time"]:
+        print(f"  weather: hour {target_str} not in api response, skipping")
+        return None
+
+    idx = data["time"].index(target_str)
+    return {
+        "hour":          current_hour,
+        "temperature":   data["temperature_2m"][idx],
+        "precipitation": data["precipitation"][idx],
+        "windspeed":     data["windspeed_10m"][idx],
+        "weathercode":   data["weathercode"][idx],
+        "snowfall":      data["snowfall"][idx],
+    }
+
+
+def upsert_weather(cur, weather: dict | None) -> None:
+    if weather is None:
+        return
+    cur.execute(
+        """
+        INSERT INTO weather_hourly
+            (hour, temperature, precipitation, windspeed, weathercode, snowfall)
+        VALUES (%(hour)s, %(temperature)s, %(precipitation)s, %(windspeed)s,
+                %(weathercode)s, %(snowfall)s)
+        ON CONFLICT (hour) DO UPDATE SET
+            temperature   = EXCLUDED.temperature,
+            precipitation = EXCLUDED.precipitation,
+            windspeed     = EXCLUDED.windspeed,
+            weathercode   = EXCLUDED.weathercode,
+            snowfall      = EXCLUDED.snowfall
+        """,
+        weather,
+    )
 
 
 def fetch_prague():
@@ -160,12 +215,18 @@ def main():
     scrape_time = datetime.now(timezone.utc)
     print(f"  {len(stations)} stations at {scrape_time:%Y-%m-%d %H:%M:%S} UTC")
 
+    print("fetching weather...")
+    weather = fetch_weather(scrape_time)
+    if weather:
+        print(f"  {weather['temperature']:.1f}°C  precip={weather['precipitation']}mm  code={weather['weathercode']}")
+
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             upsert_stations(cur, stations, scrape_time)
             insert_snapshots(cur, stations, scrape_time)
             update_bike_positions(cur, stations, scrape_time)
+            upsert_weather(cur, weather)
         conn.commit()
         print("done.")
     except Exception as e:
