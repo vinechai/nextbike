@@ -8,3 +8,12 @@ folium
 seaborn
 matplotlib
 numpy
+lightgbm
+xgboost
+scikit-learn
+fastapi
+uvicorn[standard]
+pytz
+streamlit
+pydeck
+shap
