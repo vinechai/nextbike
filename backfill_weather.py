@@ -86,9 +86,9 @@ def main() -> None:
     rows = fetch_weather(args.start, end_date)
     print(f"  {len(rows):,} hourly records")
 
-    db_url = os.environ.get("DATABASE_URL")
+    db_url = os.environ.get("SUPABASE_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not db_url:
-        print("DATABASE_URL not set")
+        print("set SUPABASE_DATABASE_URL or DATABASE_URL")
         sys.exit(1)
 
     conn = psycopg2.connect(db_url)

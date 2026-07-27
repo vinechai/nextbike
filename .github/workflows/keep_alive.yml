@@ -1,0 +1,15 @@
+name: keep alive
+
+# github disables scheduled workflows after 60 days of no repository activity.
+# this runs on the 1st of each month to keep the scraper workflow active.
+
+on:
+  schedule:
+    - cron: "0 9 1 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "monthly ping — keeps scraper workflow from being disabled"

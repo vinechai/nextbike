@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
 compute geospatial features for each bike station from openstreetmap and elevation data.
-run once — output: data/station_geo.parquet.
+run once, output saved to data/station_geo.parquet.
 
 features per station:
-  elevation_m          — meters above sea level (srtm 30m via opentopodata)
-  dist_metro_m         — distance to nearest metro entrance
-  n_metro_500m         — metro entrances within 500m
-  dist_tram_m          — distance to nearest tram stop
-  n_tram_300m          — tram stops within 300m
-  n_cafe_300m          — cafes + restaurants within 300m (activity density proxy)
-  dist_park_m          — distance to nearest park centroid
-  n_park_500m          — parks within 500m
-  n_office_500m        — office buildings within 500m
+  elevation_m: meters above sea level (srtm 30m via opentopodata)
+  dist_metro_m: distance to nearest metro entrance
+  n_metro_500m: metro entrances within 500m
+  dist_tram_m: distance to nearest tram stop
+  n_tram_300m: tram stops within 300m
+  n_cafe_300m: cafes + restaurants within 300m (activity density proxy)
+  dist_park_m: distance to nearest park centroid
+  n_park_500m: parks within 500m
+  n_office_500m: office buildings within 500m
 
-data sources: overpass api (osm), opentopodata api — both free, no api key.
+data sources: overpass api (osm), opentopodata api (both free, no api key).
 
 usage:
     DATABASE_URL=postgresql://... python enrich_stations.py

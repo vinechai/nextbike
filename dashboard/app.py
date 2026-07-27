@@ -5,23 +5,25 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import pydeck as pdk
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from datetime import datetime, timezone, timedelta
 
 API_BASE = "http://localhost:8000"
 
 st.set_page_config(
-    page_title="nextbike prague — demand forecast",
+    page_title="nextbike prague",
     page_icon="🚲",
     layout="wide",
 )
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── helpers ────────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=60)
 def fetch_predictions(hour_iso: str | None = None) -> pd.DataFrame:
     url = f"{API_BASE}/predict/all/now"
     params = {"hour": hour_iso} if hour_iso else {}
-    resp = requests.get(url, params=params, timeout=10)
+    resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
     data = resp.json()
     df = pd.DataFrame(data["predictions"])
@@ -29,25 +31,37 @@ def fetch_predictions(hour_iso: str | None = None) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300)
-def fetch_stations() -> pd.DataFrame:
-    resp = requests.get(f"{API_BASE}/stations", timeout=10)
+@st.cache_data(ttl=60)
+def fetch_debug(uid: int) -> dict:
+    resp = requests.get(f"{API_BASE}/predict/{uid}/debug", timeout=10)
     resp.raise_for_status()
-    return pd.DataFrame(resp.json())
+    return resp.json()
+
+
+@st.cache_data(ttl=120)
+def fetch_timeline(uid: int) -> pd.DataFrame:
+    resp = requests.get(f"{API_BASE}/station/{uid}/timeline", timeout=10)
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["scrape_time"] = pd.to_datetime(df["scrape_time"])
+    return df.sort_values("scrape_time")
 
 
 def demand_color(val: float, max_val: float) -> list[int]:
-    """map demand 0..max to green (low) → red (high) as RGBA."""
+    """map predicted bikes 0..max to red (empty) → green (many) as RGBA."""
     t = min(val / max(max_val, 1), 1.0)
-    r = int(255 * t)
-    g = int(255 * (1 - t))
+    r = int(255 * (1 - t))
+    g = int(255 * t)
     return [r, g, 40, 200]
 
 
-# ── sidebar ───────────────────────────────────────────────────────────────────
+# ── sidebar ────────────────────────────────────────────────────────────────────
 
-st.sidebar.title("🚲 nextbike forecast")
-st.sidebar.markdown("predicted average bikes available at each station.")
+st.sidebar.title("nextbike prague")
+st.sidebar.markdown("predicted bikes per station. click a dot to see details.")
 
 now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
@@ -61,9 +75,9 @@ target_iso = target_utc.isoformat()
 
 st.sidebar.markdown(f"**target:** `{target_utc.strftime('%Y-%m-%d %H:%M UTC')}`")
 st.sidebar.markdown("---")
-st.sidebar.markdown("color: 🟢 more bikes → 🔴 fewer bikes")
+st.sidebar.markdown("🔴 empty  →  🟢 many bikes")
 
-# ── main content ──────────────────────────────────────────────────────────────
+# ── load predictions ───────────────────────────────────────────────────────────
 
 st.title("nextbike prague — demand forecast")
 
@@ -77,23 +91,24 @@ except Exception as e:
 max_pred = df["predicted_avg_available"].quantile(0.95)
 df["color"] = df["predicted_avg_available"].apply(lambda v: demand_color(v, max_pred))
 
-# metrics row
 col1, col2, col3 = st.columns(3)
-col1.metric("total stations", f"{len(df):,}")
+col1.metric("stations", f"{len(df):,}")
 col2.metric("avg predicted bikes", f"{df['predicted_avg_available'].mean():.1f}")
 col3.metric("stations with ≤1 bike", f"{(df['predicted_avg_available'] <= 1).sum():,}")
 
-# pydeck map
+# ── map ────────────────────────────────────────────────────────────────────────
+
 layer = pdk.Layer(
     "ScatterplotLayer",
     data=df,
     get_position=["lng", "lat"],
     get_fill_color="color",
     get_radius=80,
-    radius_min_pixels=5,
-    radius_max_pixels=20,
+    radius_min_pixels=4,
+    radius_max_pixels=18,
     pickable=True,
     auto_highlight=True,
+    id="station-layer",
 )
 
 view = pdk.ViewState(
@@ -105,35 +120,104 @@ view = pdk.ViewState(
 
 tooltip = {
     "html": "<b>{name}</b><br/>predicted bikes: <b>{predicted_avg_available}</b>",
-    "style": {"background": "rgba(0,0,0,0.75)", "color": "white", "fontSize": "13px", "padding": "6px 10px"},
+    "style": {
+        "background": "rgba(0,0,0,0.8)",
+        "color": "white",
+        "fontSize": "13px",
+        "padding": "6px 10px",
+        "borderRadius": "4px",
+    },
 }
 
-st.pydeck_chart(pdk.Deck(
+deck = pdk.Deck(
     layers=[layer],
     initial_view_state=view,
     tooltip=tooltip,
-    map_style="mapbox://styles/mapbox/light-v10",
-))
+    map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+)
 
-# distribution
-st.subheader("predicted demand distribution")
-hist_col, table_col = st.columns([2, 1])
+event = st.pydeck_chart(deck, selection_mode="single-object", on_select="rerun", key="map")
 
-with hist_col:
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(7, 3))
-    ax.hist(df["predicted_avg_available"], bins=30, color="#3498db", edgecolor="none")
-    ax.axvline(df["predicted_avg_available"].mean(), color="red", linestyle="--", linewidth=1,
-               label=f"mean {df['predicted_avg_available'].mean():.1f}")
-    ax.set_xlabel("predicted avg bikes")
-    ax.set_ylabel("stations")
-    ax.set_title(f"demand distribution — {target_utc.strftime('%H:%M UTC')}")
-    ax.legend()
-    st.pyplot(fig)
+# ── station detail panel ───────────────────────────────────────────────────────
 
-with table_col:
-    st.markdown("**lowest predicted availability**")
-    lowest = df.nsmallest(10, "predicted_avg_available")[["name", "predicted_avg_available"]]
-    lowest.columns = ["station", "pred"]
-    lowest["pred"] = lowest["pred"].round(1)
-    st.dataframe(lowest, hide_index=True, use_container_width=True)
+selected_uid = None
+if event and hasattr(event, "selection") and event.selection:
+    objects = event.selection.get("objects", {})
+    hits = objects.get("station-layer", [])
+    if hits:
+        selected_uid = hits[0].get("station_uid")
+
+if selected_uid:
+    st.markdown("---")
+
+    try:
+        dbg = fetch_debug(selected_uid)
+    except Exception as e:
+        st.warning(f"could not load station data: {e}")
+        dbg = None
+
+    if dbg:
+        st.subheader(dbg["name"])
+
+        info_col, timeline_col = st.columns([1, 2])
+
+        with info_col:
+            st.markdown(f"**predicted bikes: {dbg['predicted_avg_available']}**")
+            st.markdown(f"district: P{dbg.get('district', '?')} &nbsp;|&nbsp; capacity: {dbg.get('bike_racks', '?')} racks")
+            st.markdown(f"weather: {dbg.get('temperature', '?')}°C, wind {dbg.get('windspeed', '?')} km/h, precip {dbg.get('precipitation', '?')} mm")
+
+            st.markdown("**lag inputs used by model**")
+            for lag, label in [("lag_1h", "1h ago"), ("lag_24h", "24h ago"), ("lag_168h", "7d ago")]:
+                val  = dbg.get(lag)
+                ts   = dbg.get(f"{lag}_ts")
+                src  = dbg.get(f"{lag}_source", "live")
+                ts_short = ts[:16].replace("T", " ") if ts else "no data"
+                if val is not None:
+                    st.markdown(f"- **{label}**: {val} bikes — from `{ts_short}` ({'live db' if src == 'live' else src})")
+                else:
+                    st.markdown(f"- **{label}**: not available")
+
+            st.markdown("**nearby**")
+            geo_items = [
+                ("dist_metro_m",  "metro"),
+                ("dist_tram_m",   "tram stop"),
+                ("dist_cafe_m",   "cafe"),
+                ("dist_park_m",   "park"),
+                ("elevation_m",   "elevation"),
+                ("n_tram_300m",   "tram lines ≤300m"),
+                ("n_cafe_300m",   "cafes ≤300m"),
+            ]
+            for key, label in geo_items:
+                val = dbg.get(key)
+                if val is not None:
+                    unit = "m" if key != "n_tram_300m" and key != "n_cafe_300m" else ""
+                    st.markdown(f"- {label}: {val:.0f} {unit}".rstrip())
+
+        with timeline_col:
+            try:
+                tl = fetch_timeline(selected_uid)
+                if not tl.empty:
+                    fig, ax = plt.subplots(figsize=(9, 3.5))
+                    fig.patch.set_facecolor("#0e1117")
+                    ax.set_facecolor("#0e1117")
+                    ax.plot(tl["scrape_time"], tl["bikes_available_to_rent"],
+                            color="#4ade80", linewidth=1.2, zorder=2)
+                    ax.fill_between(tl["scrape_time"], tl["bikes_available_to_rent"],
+                                    alpha=0.15, color="#4ade80")
+                    ax.set_ylabel("bikes available", color="#aaaaaa", fontsize=9)
+                    ax.set_title("last 24h — actual scraper data", color="#cccccc", fontsize=10)
+                    ax.tick_params(colors="#888888", labelsize=8)
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+                    for spine in ax.spines.values():
+                        spine.set_color("#333333")
+                    ax.yaxis.set_tick_params(labelcolor="#888888")
+                    plt.xticks(rotation=30)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.info("no scrape data in the last 24h for this station")
+            except Exception as e:
+                st.warning(f"could not load timeline: {e}")
+else:
+    st.markdown("*click a station on the map to see details*")
