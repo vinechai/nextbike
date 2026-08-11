@@ -1,5 +1,6 @@
 """streamlit dashboard — nextbike prague demand forecast."""
 
+import os
 import requests
 import pandas as pd
 import numpy as np
@@ -9,7 +10,12 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timezone, timedelta
 
-API_BASE = "http://localhost:8000"
+# streamlit cloud: set API_BASE in the app's secrets (Settings -> Secrets)
+# locally: set API_BASE env var or defaults to localhost
+try:
+    API_BASE = st.secrets["API_BASE"]
+except (KeyError, FileNotFoundError):
+    API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 
 st.set_page_config(
     page_title="nextbike prague",

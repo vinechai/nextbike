@@ -1,9 +1,11 @@
-data/
-*.parquet
-*.lgb
 __pycache__/
 .env
 .env.*
 .ipynb_checkpoints/
 .vscode/
 *.pyc
+
+# keep training data out but commit model artifacts needed for the api
+data/features.parquet
+stations_history.parquet
+bikes_history.parquet
