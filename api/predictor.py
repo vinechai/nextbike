@@ -192,12 +192,14 @@ class Predictor:
     def _get_lags_one(self, station_uid: int, target_utc: datetime) -> dict:
         """get lag values for one station with closest-hour logic and debug timestamps."""
         target_h = target_utc.replace(minute=0, second=0, microsecond=0)
+        # lag_1h anchors to real now so its window never falls in the future
+        now_h = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         conn = psycopg2.connect(self.db_url)
         result: dict = {}
         with conn.cursor() as cur:
-            # lag_1h: most recent hourly avg in the last 6 hours
+            # lag_1h: most recent hourly avg in the last 6 hours (from real now)
             val, ts = _closest_hour_avg(cur, station_uid,
-                                        target_h - timedelta(hours=6), target_h)
+                                        now_h - timedelta(hours=6), now_h)
             result["lag_1h"]    = val if val is not None else np.nan
             result["lag_1h_ts"] = ts.isoformat() if ts else None
 
@@ -222,11 +224,13 @@ class Predictor:
     def _get_lags_all(self, target_utc: datetime) -> dict[int, dict]:
         """batch lag query for all stations:closest-hour logic, no timestamps."""
         target_h = target_utc.replace(minute=0, second=0, microsecond=0)
+        # lag_1h anchors to real now so its window never falls in the future
+        now_h = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         conn = psycopg2.connect(self.db_url)
         lags: dict[int, dict] = {}
         with conn.cursor() as cur:
             vals, _ = _closest_hour_avg(cur, None,
-                                        target_h - timedelta(hours=6), target_h)
+                                        now_h - timedelta(hours=6), now_h)
             for uid, v in vals.items():
                 lags.setdefault(uid, {})["lag_1h"] = v
 
@@ -284,10 +288,9 @@ class Predictor:
     def predict_one(self, station_uid: int, target_utc: datetime) -> float:
         if station_uid not in self.stations.index:
             raise KeyError(f"station {station_uid} not found")
-        now_utc    = datetime.now(timezone.utc)
         time_feats = _prague_time_features(target_utc)
         weather    = self._get_weather(target_utc)
-        lag        = self._get_lags_one(station_uid, now_utc)
+        lag        = self._get_lags_one(station_uid, target_utc)
         row, _     = self._assemble_row(station_uid, time_feats, weather, lag)
         pred = self.model.predict(pd.DataFrame([row])[self.feature_cols])[0]
         return max(0.0, float(pred))
@@ -297,10 +300,9 @@ class Predictor:
         if station_uid not in self.stations.index:
             raise KeyError(f"station {station_uid} not found")
         st         = self.stations.loc[station_uid]
-        now_utc    = datetime.now(timezone.utc)
         time_feats = _prague_time_features(target_utc)
         weather    = self._get_weather(target_utc)
-        lag        = self._get_lags_one(station_uid, now_utc)
+        lag        = self._get_lags_one(station_uid, target_utc)
         row, sources = self._assemble_row(station_uid, time_feats, weather, lag)
         pred = max(0.0, float(self.model.predict(pd.DataFrame([row])[self.feature_cols])[0]))
 
@@ -335,10 +337,9 @@ class Predictor:
 
     def predict_all(self, target_utc: datetime) -> list[dict]:
         """predict for every station:used by the dashboard map."""
-        now_utc    = datetime.now(timezone.utc)
         time_feats = _prague_time_features(target_utc)
         weather    = self._get_weather(target_utc)
-        lags       = self._get_lags_all(now_utc)   # always use real now for lag windows
+        lags       = self._get_lags_all(target_utc)
 
         rows = []
         for uid in self.stations.index:
