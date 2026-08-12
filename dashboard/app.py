@@ -10,6 +10,13 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timezone, timedelta
 
+try:
+    from zoneinfo import ZoneInfo
+    _PRAGUE_TZ = ZoneInfo("Europe/Prague")
+except Exception:
+    import pytz
+    _PRAGUE_TZ = pytz.timezone("Europe/Prague")
+
 # streamlit cloud: set API_BASE in the app's secrets (Settings -> Secrets)
 # locally: set API_BASE env var or defaults to localhost
 try:
@@ -38,8 +45,9 @@ def fetch_predictions(hour_iso: str | None = None) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60)
-def fetch_debug(uid: int) -> dict:
-    resp = requests.get(f"{API_BASE}/predict/{uid}/debug", timeout=10)
+def fetch_debug(uid: int, hour_iso: str | None = None) -> dict:
+    params = {"hour": hour_iso} if hour_iso else {}
+    resp = requests.get(f"{API_BASE}/predict/{uid}/debug", params=params, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
@@ -79,7 +87,8 @@ hour_offset = st.sidebar.slider(
 target_utc = now_utc + timedelta(hours=hour_offset)
 target_iso = target_utc.isoformat()
 
-st.sidebar.markdown(f"**target:** `{target_utc.strftime('%Y-%m-%d %H:%M UTC')}`")
+target_prague = target_utc.astimezone(_PRAGUE_TZ)
+st.sidebar.markdown(f"**target:** `{target_prague.strftime('%Y-%m-%d %H:%M')}` (Prague time)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("🔴 empty  →  🟢 many bikes")
 
@@ -100,7 +109,7 @@ df["color"] = df["predicted_avg_available"].apply(lambda v: demand_color(v, max_
 col1, col2, col3 = st.columns(3)
 col1.metric("stations", f"{len(df):,}")
 col2.metric("avg predicted bikes", f"{df['predicted_avg_available'].mean():.1f}")
-col3.metric("stations with ≤1 bike", f"{(df['predicted_avg_available'] <= 1).sum():,}")
+col3.metric("stations near empty", f"{(df['predicted_avg_available'] < 0.5).sum():,}")
 
 # ── map ────────────────────────────────────────────────────────────────────────
 
@@ -157,7 +166,7 @@ if selected_uid:
     st.markdown("---")
 
     try:
-        dbg = fetch_debug(selected_uid)
+        dbg = fetch_debug(selected_uid, target_iso if hour_offset > 0 else None)
     except Exception as e:
         st.warning(f"could not load station data: {e}")
         dbg = None

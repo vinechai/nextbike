@@ -284,9 +284,10 @@ class Predictor:
     def predict_one(self, station_uid: int, target_utc: datetime) -> float:
         if station_uid not in self.stations.index:
             raise KeyError(f"station {station_uid} not found")
+        now_utc    = datetime.now(timezone.utc)
         time_feats = _prague_time_features(target_utc)
         weather    = self._get_weather(target_utc)
-        lag        = self._get_lags_one(station_uid, target_utc)
+        lag        = self._get_lags_one(station_uid, now_utc)
         row, _     = self._assemble_row(station_uid, time_feats, weather, lag)
         pred = self.model.predict(pd.DataFrame([row])[self.feature_cols])[0]
         return max(0.0, float(pred))
@@ -295,10 +296,11 @@ class Predictor:
         """full prediction with lag timestamps and geo info:for the debug endpoint."""
         if station_uid not in self.stations.index:
             raise KeyError(f"station {station_uid} not found")
-        st = self.stations.loc[station_uid]
+        st         = self.stations.loc[station_uid]
+        now_utc    = datetime.now(timezone.utc)
         time_feats = _prague_time_features(target_utc)
         weather    = self._get_weather(target_utc)
-        lag        = self._get_lags_one(station_uid, target_utc)
+        lag        = self._get_lags_one(station_uid, now_utc)
         row, sources = self._assemble_row(station_uid, time_feats, weather, lag)
         pred = max(0.0, float(self.model.predict(pd.DataFrame([row])[self.feature_cols])[0]))
 
@@ -333,9 +335,10 @@ class Predictor:
 
     def predict_all(self, target_utc: datetime) -> list[dict]:
         """predict for every station:used by the dashboard map."""
+        now_utc    = datetime.now(timezone.utc)
         time_feats = _prague_time_features(target_utc)
         weather    = self._get_weather(target_utc)
-        lags       = self._get_lags_all(target_utc)
+        lags       = self._get_lags_all(now_utc)   # always use real now for lag windows
 
         rows = []
         for uid in self.stations.index:
