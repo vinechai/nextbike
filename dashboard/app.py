@@ -36,7 +36,7 @@ st.set_page_config(
 def fetch_predictions(hour_iso: str | None = None) -> pd.DataFrame:
     url = f"{API_BASE}/predict/all/now"
     params = {"hour": hour_iso} if hour_iso else {}
-    resp = requests.get(url, params=params, timeout=20)
+    resp = requests.get(url, params=params, timeout=90)
     resp.raise_for_status()
     data = resp.json()
     df = pd.DataFrame(data["predictions"])
@@ -47,14 +47,14 @@ def fetch_predictions(hour_iso: str | None = None) -> pd.DataFrame:
 @st.cache_data(ttl=60)
 def fetch_debug(uid: int, hour_iso: str | None = None) -> dict:
     params = {"hour": hour_iso} if hour_iso else {}
-    resp = requests.get(f"{API_BASE}/predict/{uid}/debug", params=params, timeout=10)
+    resp = requests.get(f"{API_BASE}/predict/{uid}/debug", params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
 
 @st.cache_data(ttl=120)
 def fetch_timeline(uid: int) -> pd.DataFrame:
-    resp = requests.get(f"{API_BASE}/station/{uid}/timeline", timeout=10)
+    resp = requests.get(f"{API_BASE}/station/{uid}/timeline", timeout=30)
     resp.raise_for_status()
     rows = resp.json()
     if not rows:
@@ -91,17 +91,19 @@ target_prague = target_utc.astimezone(_PRAGUE_TZ)
 st.sidebar.markdown(f"**target:** `{target_prague.strftime('%Y-%m-%d %H:%M')}` (Prague time)")
 st.sidebar.markdown("---")
 st.sidebar.markdown("🔴 empty  →  🟢 many bikes")
+st.sidebar.caption("api may take ~60s to wake up on first load (render free tier)")
 
 # ── load predictions ───────────────────────────────────────────────────────────
 
 st.title("nextbike prague — demand forecast")
 
-try:
-    df = fetch_predictions(target_iso if hour_offset > 0 else None)
-except Exception as e:
-    st.error(f"cannot reach API at {API_BASE} — is it running?\n\n`{e}`")
-    st.code("uvicorn api.main:app --reload", language="bash")
-    st.stop()
+with st.spinner("loading predictions... (first load may take ~60s while api wakes up)"):
+    try:
+        df = fetch_predictions(target_iso if hour_offset > 0 else None)
+    except Exception as e:
+        st.error(f"cannot reach API at {API_BASE} — is it running?\n\n`{e}`")
+        st.code("uvicorn api.main:app --reload", language="bash")
+        st.stop()
 
 max_pred = df["predicted_avg_available"].quantile(0.95)
 df["color"] = df["predicted_avg_available"].apply(lambda v: demand_color(v, max_pred))
@@ -165,6 +167,10 @@ if event and hasattr(event, "selection") and event.selection:
 if selected_uid:
     st.markdown("---")
 
+    # pull the predicted number from the already-loaded df so it matches the map dot exactly
+    map_row = df[df['station_uid'] == selected_uid]
+    map_pred = round(float(map_row['predicted_avg_available'].iloc[0]), 2) if not map_row.empty else None
+
     try:
         dbg = fetch_debug(selected_uid, target_iso if hour_offset > 0 else None)
     except Exception as e:
@@ -172,6 +178,9 @@ if selected_uid:
         dbg = None
 
     if dbg:
+        # override the api's per-station prediction with the map prediction (same source)
+        if map_pred is not None:
+            dbg['predicted_avg_available'] = map_pred
         st.subheader(dbg["name"])
 
         info_col, timeline_col = st.columns([1, 2])
