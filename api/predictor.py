@@ -148,6 +148,9 @@ class Predictor:
         conn = self._pool.getconn()
         try:
             yield conn
+        except Exception:
+            conn.rollback()   # reset aborted transaction before returning to pool
+            raise
         finally:
             self._pool.putconn(conn)
 
