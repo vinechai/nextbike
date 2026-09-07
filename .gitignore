@@ -5,7 +5,6 @@ __pycache__/
 .vscode/
 *.pyc
 
-# keep training data out but commit model artifacts needed for the api
-data/features.parquet
+# large raw training data — keep out of repo
 stations_history.parquet
 bikes_history.parquet
