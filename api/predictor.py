@@ -113,6 +113,7 @@ def _closest_hour_avg(cur, station_uid: int | None,
         return None, None
     else:
         # batch: return {station_uid: avg_bikes}
+        # params_order (center) must come first because ORDER BY appears before WHERE in SQL
         cur.execute(f"""
             WITH bucketed AS (
                 SELECT
@@ -128,7 +129,7 @@ def _closest_hour_avg(cur, station_uid: int | None,
                 GROUP BY station_uid, date_trunc('hour', scrape_time)
             )
             SELECT station_uid, avg_bikes FROM bucketed WHERE rn = 1
-        """, params_filter + params_order)
+        """, params_order + params_filter)
         return {uid: float(val) for uid, val in cur.fetchall() if val is not None}, None
 
 
@@ -219,17 +220,20 @@ class Predictor:
         target_h = prague.replace(minute=0, second=0, microsecond=0, tzinfo=None)
         with self._db() as conn:
             with conn.cursor() as cur:
+                # SELECT * so missing columns (shortwave_radiation, tsun) don't crash
                 cur.execute("""
-                    SELECT temperature, precipitation, windspeed, weathercode, snowfall,
-                           shortwave_radiation, tsun
+                    SELECT *
                     FROM weather_hourly
                     ORDER BY ABS(EXTRACT(EPOCH FROM (hour - %s::timestamptz)))
                     LIMIT 1
                 """, (target_h,))
-                row = cur.fetchone()
-        if row is None:
+                desc = cur.description
+                row  = cur.fetchone()
+        if row is None or desc is None:
             return {c: np.nan for c in _WEATHER_COLS}
-        return dict(zip(_WEATHER_COLS, (float(v) if v is not None else np.nan for v in row)))
+        available = {d[0]: (float(v) if v is not None else np.nan)
+                     for d, v in zip(desc, row) if d[0] != "hour"}
+        return {c: available.get(c, np.nan) for c in _WEATHER_COLS}
 
     def _get_lags_one(self, station_uid: int, target_utc: datetime) -> dict:
         """get lag values for one station with closest-hour logic and debug timestamps."""
