@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 
 st.set_page_config(
-    page_title="nextbike prague",
+    title="nextbike prague",
     page_icon="🚲",
     layout="wide",
 )
@@ -105,13 +105,26 @@ with st.spinner("loading predictions... (first load may take ~60s while api wake
         st.code("uvicorn api.main:app --reload", language="bash")
         st.stop()
 
-max_pred = df["predicted_avg_available"].quantile(0.95)
-df["color"] = df["predicted_avg_available"].apply(lambda v: demand_color(v, max_pred))
+if "is_active" not in df.columns:
+    df["is_active"] = True   # backward compat with older api
 
-col1, col2, col3 = st.columns(3)
-col1.metric("stations", f"{len(df):,}")
-col2.metric("avg predicted bikes", f"{df['predicted_avg_available'].mean():.1f}")
-col3.metric("stations near empty", f"{(df['predicted_avg_available'] < 0.5).sum():,}")
+active_df = df[df["is_active"]]
+max_pred = active_df["predicted_avg_available"].quantile(0.95) if not active_df.empty else 10.0
+df["color"] = df.apply(
+    lambda r: demand_color(r["predicted_avg_available"], max_pred) if r["is_active"]
+              else [150, 150, 150, 120],
+    axis=1,
+)
+
+n_inactive = int((~df["is_active"]).sum())
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("active stations", f"{len(active_df):,}")
+col2.metric("avg predicted bikes",
+            f"{active_df['predicted_avg_available'].mean():.1f}" if not active_df.empty else "—")
+col3.metric("stations near empty",
+            f"{(active_df['predicted_avg_available'] < 0.5).sum():,}" if not active_df.empty else "0")
+col4.metric("inactive (greyed)", f"{n_inactive:,}",
+            help="stations with historically low usage — shown in grey on the map")
 
 # ── map ────────────────────────────────────────────────────────────────────────
 
