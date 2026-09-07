@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 
 st.set_page_config(
-    title="nextbike prague",
+    page_title="nextbike prague",
     page_icon="🚲",
     layout="wide",
 )
