@@ -1,12 +1,12 @@
 # nextbike prague — demand forecasting
 
-End-to-end data engineering and ML project: scrape live bike-sharing data, store it in a database, explore demand patterns, train a forecasting model, serve predictions through an API, and display them on a live map.
+end-to-end data engineering and ML project: scrape live bike-sharing data, store it in a database, explore demand patterns, train a forecasting model, serve predictions through an API, and display them on a live map.
 
-**Data**: ~3.6 million station snapshots scraped from the nextbike Prague API (Jan–Jun 2026, every 10 minutes), plus hourly weather from Open-Meteo.
+**data**: ~3.7M station-hour observations scraped from the nextbike Prague API (Jan–Aug 2026, every 10 minutes), plus hourly weather from Open-Meteo.
 
-**Model**: LightGBM trained on hourly station availability with lag, time, weather, and geospatial features. Test MAE 0.118 bikes (R² 0.960).
+**model**: LightGBM trained on hourly station availability with lag, time, weather, and geospatial features. test MAE 0.89 bikes (R² 0.58) on a 6-week held-out test set. beats a naive lag-24h baseline by 11%.
 
-**Live demo**: *coming soon*
+**live demo**: *coming soon*
 
 ## Architecture
 
@@ -23,7 +23,7 @@ github actions (every 10 min)
              data/model.lgb        (streamlit)
 ```
 
-Supabase holds the live data. The API queries it for recent station availability (lag features) and runs model inference. The dashboard calls the API every 60 seconds.
+Supabase holds the live data. the API queries it for recent station availability (lag features) and runs model inference. the dashboard calls the API every 60 seconds.
 
 ## Running locally
 
@@ -47,7 +47,7 @@ streamlit run dashboard/app.py
 
 API docs at http://localhost:8000/docs, dashboard at http://localhost:8501.
 
-The notebooks need a local postgres with imported data to run. See `ingestion/import_parquet.py` if starting from the parquet files.
+the notebooks need a local postgres with imported data to run. see `ingestion/import_parquet.py` if starting from the parquet files.
 
 ## Project structure
 
@@ -82,29 +82,46 @@ render.yaml                 render deployment config for the api
 
 ## Modeling
 
-Six models compared across different feature sets. Time-based train/val/test split — test set is the last 6 weeks, no random shuffle.
+the model predicts average bikes available at a station for a given hour, up to 24h ahead. it uses lag_24h (same hour yesterday), lag_48h (two days ago), and lag_168h (same hour last week) — no lag_1h. this means the forecast is always available regardless of how far ahead you're predicting.
+
+walk-forward cross-validation across 4 time windows, with the last 6 weeks held out completely as the test set. hyperparameters tuned with Optuna (40 trials, val set scoring).
 
 | model | features | test MAE | test R² |
 |---|---|---|---|
-| naive (lag 168h) | none | 1.082 | -0.116 |
-| LightGBM | time + lag | **0.118** | **0.960** |
-| LightGBM | + geo | 0.121 | 0.960 |
-| LightGBM | + weather | 0.125 | 0.959 |
-| LightGBM | + geo + weather | 0.127 | 0.959 |
-| XGBoost | all features | 0.130 | 0.958 |
-| Random Forest | all features | 0.129 | 0.959 |
+| naive (lag_24h) | none | 1.009 | 0.359 |
+| LightGBM | time + lag | 0.896 | 0.566 |
+| LightGBM | + geo | 0.893 | 0.573 |
+| LightGBM | + weather | 0.897 | 0.567 |
+| LightGBM | + geo + weather (full) | **0.893** | **0.580** |
+| XGBoost | all features (300k sample) | 0.973 | 0.578 |
+| Random Forest | all features (300k sample) | 0.973 | 0.581 |
 
-The simplest LightGBM (time + lag features only) wins. For 1h-ahead prediction, lag_1h already carries most of the signal — the station's state 1 hour ago is the best predictor of its state now. Adding weather and geo features increases model complexity without adding signal at this horizon.
+MAE is in the same unit as the target (bikes). 0.89 means the prediction is off by less than 1 bike on average. the model beats the naive baseline by 11% — meaningful for a 24h-ahead rebalancing tool.
 
 ## Key findings
 
-- **rebalancing distorts training data**: when a truck delivers 10 bikes to a station, the hourly average spikes — that's supply intervention, not organic demand. those hours are detected and excluded from training. the detection logic (batch arrivals + known uphill routes outside rush hours) flags about 8–10% of station-hours.
-- **lag features dominate**: lag_24h (same hour yesterday) is the most important single feature, followed by lag_168h (same hour last week). together they explain most of the variance. time-of-day and day-of-week come next.
-- **simple beats complex at 1h horizon**: weather and geospatial features matter more at longer horizons (next day, next week). for 1h-ahead, recent history is the only signal that matters.
-- **scraper coverage varies a lot**: February 2026 had 7.3% coverage (GitHub Actions disabled due to 60 days of no activity). January had a smaller winter station network. training data starts from March 2026.
+- **lag features dominate**: lag_24h (same hour yesterday) is the most important single feature, followed by lag_168h (same hour last week). time-of-day and day-of-week come next. geo and weather add modest improvements on top.
+- **760 active stations out of 1,513**: stations with mean availability below 0.5 bikes are excluded from training and shown as inactive (grey) on the map. most of these are dead or seasonal spots with essentially no demand.
+- **scraper coverage varies**: february 2026 had 7% coverage (GitHub Actions 60-day auto-disable). a separate keep-alive workflow prevents this going forward. january had a smaller winter fleet. training data starts from march 2026.
+
+## Challenges
+
+**rebalancing detection**
+
+bike-sharing data is noisy because operators regularly move bikes between stations by truck. a station that jumps from 2 to 15 bikes in one hour is not organic demand — it's a delivery. training on those hours would teach the model to predict truck arrivals, which is not possible from time or weather signals alone.
+
+detecting rebalancing from raw scraper data is hard. we built four detection rules: trip-based batch arrivals (3+ bikes moving the same route in one scrape), destination-based mass arrivals (5+ bikes at the same station off-peak), slow deliveries (net rise of 8+ bikes in one hour off-peak), and availability drops (5+ bikes leaving a non-metro station in one hour). combined, these catch about 2,000 rebalancing events and exclude ~5,300 station-hours from training.
+
+despite this, some events still slip through — especially 1–2 bike moves at night that fall below the batch threshold. when lag_24h captures a post-delivery state, the model inherits that inflated value and overpredicts the following night. this is visible as a small systematic bias at 3–5am in the residual heatmap.
+
+a clean dataset with operator truck logs would make this much simpler. without it, heuristic detection is the only option, and it can't be perfect.
+
+**scraper gaps**
+
+the scraper runs on GitHub Actions and is not perfectly reliable. a 28-day outage in late June–July 2026 left fold 3 of the walk-forward CV with only 1,478 test rows (expected ~400k), so that fold was skipped. lag_168h (7-day lookback) is only 88.5% non-null because of gaps in the time series — stations with missing hours have no 7-day-ago reference to look up. the model handles missing lags via fallback logic, but accuracy degrades slightly for stations with sporadic coverage.
 
 ## Notes
 
-Scraper runs on GitHub Actions every 10 minutes and writes to Supabase. A separate monthly keep-alive workflow prevents the 60-day auto-disable.
+scraper runs on GitHub Actions every 10 minutes and writes to Supabase. a separate monthly keep-alive workflow prevents the 60-day auto-disable.
 
-The model predicts organic demand — it cannot account for rebalancing truck arrivals. This is a known limitation and is how production bike-sharing forecasting systems work in practice.
+the model predicts organic demand — it cannot account for rebalancing truck arrivals. this is a known limitation and is how production bike-sharing forecasting systems work in practice.
