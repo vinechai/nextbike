@@ -204,7 +204,7 @@ if selected_uid:
             st.markdown(f"weather: {dbg.get('temperature', '?')}°C, wind {dbg.get('windspeed', '?')} km/h, precip {dbg.get('precipitation', '?')} mm")
 
             st.markdown("**lag inputs used by model**")
-            for lag, label in [("lag_1h", "1h ago"), ("lag_24h", "24h ago"), ("lag_168h", "7d ago")]:
+            for lag, label in [("lag_24h", "24h ago"), ("lag_48h", "48h ago"), ("lag_168h", "7d ago")]:
                 val  = dbg.get(lag)
                 ts   = dbg.get(f"{lag}_ts")
                 src  = dbg.get(f"{lag}_source", "live")

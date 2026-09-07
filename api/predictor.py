@@ -453,15 +453,15 @@ class Predictor:
             "lng":         float(st["lng"]),
             "is_active":   bool(st.get("is_active", False)),
             "predicted_avg_available": round(pred, 2),
-            # lag values and their provenance
-            "lag_1h":        round(float(row["lag_1h"]), 2) if not np.isnan(row.get("lag_1h", np.nan)) else None,
-            "lag_1h_ts":     lag.get("lag_1h_ts"),
-            "lag_1h_source": sources.get("lag_1h", "live"),
-            "lag_24h":       round(float(row["lag_24h"]), 2) if not np.isnan(row.get("lag_24h", np.nan)) else None,
-            "lag_24h_ts":    lag.get("lag_24h_ts"),
+            # lag values used by the model (lag_1h is not a feature — omitted)
+            "lag_24h":        round(float(row["lag_24h"]), 2) if not np.isnan(row.get("lag_24h", np.nan)) else None,
+            "lag_24h_ts":     lag.get("lag_24h_ts"),
             "lag_24h_source": sources.get("lag_24h", "live"),
-            "lag_168h":      round(float(row["lag_168h"]), 2) if not np.isnan(row.get("lag_168h", np.nan)) else None,
-            "lag_168h_ts":   lag.get("lag_168h_ts"),
+            "lag_48h":        round(float(row["lag_48h"]), 2) if not np.isnan(row.get("lag_48h", np.nan)) else None,
+            "lag_48h_ts":     lag.get("lag_48h_ts"),
+            "lag_48h_source": sources.get("lag_48h", "live"),
+            "lag_168h":       round(float(row["lag_168h"]), 2) if not np.isnan(row.get("lag_168h", np.nan)) else None,
+            "lag_168h_ts":    lag.get("lag_168h_ts"),
             "lag_168h_source": sources.get("lag_168h", "live"),
             # weather
             "temperature":   weather.get("temperature"),
